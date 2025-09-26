@@ -1,0 +1,11 @@
+langchain
+langgraph
+llama-cpp-python
+sqlalchemy
+psycopg2-binary
+faiss-cpu
+sentence-transformers
+fastapi
+uvicorn[standard]
+pydantic
+pytest
