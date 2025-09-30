@@ -14,7 +14,7 @@ from typing import Dict, Any, List
 
 import logging
 
-from src.graph.context import GraphContext
+from src.graph.context_model import GraphContext
 from src.services.results.agent_result import AgentResult
 
 LOG = logging.getLogger(__name__)

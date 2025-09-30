@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional
 
 import logging
 
-from src.graph.context import GraphContext
+from src.graph.context_model import GraphContext
 
 LOG = logging.getLogger(__name__)
 
