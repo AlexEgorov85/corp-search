@@ -1,4 +1,4 @@
-# coding: utf-8
+# src/agents/BooksLibraryAgent/__init__.py
 """
 Инициализация пакета BooksLibraryAgent.
 
@@ -6,5 +6,4 @@
     from src.agents.BooksLibraryAgent import BooksLibraryAgent
 """
 from .core import BooksLibraryAgent
-
 __all__ = ["BooksLibraryAgent"]

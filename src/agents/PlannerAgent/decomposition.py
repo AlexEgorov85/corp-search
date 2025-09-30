@@ -43,9 +43,9 @@ class DecompositionPhase:
         for attempt in range(1, self.max_retries + 1):
             messages = self._prepare_messages(question, tool_registry, feedback)
             try:
-                print("=========================================")
-                print("Промт для плана:", messages)
-                print("=========================================")
+                # print("=========================================")
+                # print("Промт для плана:", messages)
+                # print("=========================================")
                 raw = self._call_llm(messages)
             except Exception as e:
                 LOG.error("Ошибка вызова LLM на этапе декомпозиции: %s", e)

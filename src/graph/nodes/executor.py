@@ -1,38 +1,84 @@
 # src/graph/nodes/executor.py
+# coding: utf-8
+"""
+executor_node — узел, который выполняет вызовы инструментов (tool agents).
+
+Изменения:
+- Перенёс всю логику работы с execution/current_call/steps на GraphContext API
+- Сохранил поведение: инстанцируем инструмент из tool registry (control=False),
+  вызываем execute_operation(operation, params, context) и в зависимости от AgentResult
+  обновляем step.raw_output/final_result/status/error.
+- Всегда очищаем current_call в конце обработки (успех/ошибка).
+"""
+from __future__ import annotations
 from typing import Dict, Any
+
 import logging
-from src.agents.registry import AgentRegistry
+
+from src.graph.context import GraphContext
+from src.services.results.agent_result import AgentResult
 
 LOG = logging.getLogger(__name__)
 
 
-def executor_node(state: Dict[str, Any], agent_registry: AgentRegistry) -> Dict[str, Any]:
-    current_call = state.get("current_call", {})
-    decision = current_call.get("decision", {})
-    action = decision.get("action")
+def executor_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
+    ctx = state if isinstance(state, GraphContext) else GraphContext.from_state_dict(state)
+
+    current_call = ctx.execution.current_call
+    if not current_call or not current_call.decision:
+        ctx.append_history({"type": "executor_no_current_call"})
+        return ctx.to_legacy_state()
+
+    decision = current_call.decision or {}
+    step_id = current_call.step_id or ctx.execution.current_subquestion_id
+
+    action = (decision.get("action") or "").lower()
     if action != "call_tool":
-        return {}
+        ctx.append_history({"type": "executor_skip_non_calltool", "action": action, "step_id": step_id})
+        # leave decision intact (other nodes may handle it), but return state
+        return ctx.to_legacy_state()
 
-    tool_name = decision["tool"]
-    operation = decision["operation"]
-    params = decision["params"]
+    tool_name = decision.get("tool")
+    operation = decision.get("operation")
+    params = decision.get("params", {}) or {}
 
-    tool_agent = agent_registry.instantiate_agent(tool_name, control=False)
-    if not tool_agent:
-        LOG.error("Executor: не удалось инстанцировать агент %s", tool_name)
-        return {}
+    if not tool_name or not operation:
+        ctx.set_step_error(step_id or "unknown", "Executor: invalid decision missing tool/operation", stage="validate_decision")
+        ctx.clear_current_call()
+        return ctx.to_legacy_state()
 
-    result = tool_agent.execute_operation(operation, params, state)
-    if result.status != "ok":
-        LOG.warning("Executor: операция %s.%s завершилась с ошибкой", tool_name, operation)
-        return {}
+    # Инстанцируем инструмент (tool) из tool_registry
+    try:
+        tool = agent_registry.instantiate_agent(tool_name, control=False)
+    except Exception as e:
+        ctx.set_step_error(step_id, f"Executor: instantiate tool '{tool_name}' failed: {e}", stage="instantiate_tool")
+        ctx.clear_current_call()
+        return ctx.to_legacy_state()
 
-    subq_id = current_call.get("subquestion_id", "unknown")
-    step_outputs = state.get("step_outputs", {})
+    # Выполним операцию
+    try:
+        # Поддерживаем интерфейс execute_operation(operation, params, context)
+        res = tool.execute_operation(operation, params, context={"step_id": step_id})
+    except Exception as e:
+        ctx.set_step_error(step_id, f"Executor: tool.execute threw: {e}", stage="execute_tool")
+        ctx.clear_current_call()
+        return ctx.to_legacy_state()
 
-    if operation == "validate_author":
-        step_outputs[f"{subq_id}_validated"] = result.structured
-    else:
-        step_outputs[f"{subq_id}_raw"] = result.structured or result.content
+    if not isinstance(res, AgentResult):
+        ctx.set_step_error(step_id, f"Executor: unexpected tool return type: {type(res)}", stage="execute_tool")
+        ctx.clear_current_call()
+        return ctx.to_legacy_state()
 
-    return {"step_outputs": step_outputs}
+    if res.is_error():
+        ctx.set_step_error(step_id, res.content or res.error or res.message or "tool returned error", stage="tool")
+        ctx.clear_current_call()
+        return ctx.to_legacy_state()
+
+    # Успешный результат
+    payload = res.structured if res.structured is not None else (res.content if hasattr(res, "content") else None)
+    # Сохраняем как raw_output / final_result в шаге; семантика зависит от инструмента —
+    # чтобы не ломать текущую логику, просто положим payload в final_result (как раньше большинство узлов делало)
+    ctx.set_step_result(step_id or "unknown", payload)
+    ctx.clear_current_call()
+    ctx.append_history({"type": "executor_tool_success", "tool": tool_name, "operation": operation, "step_id": step_id, "rows_preview": str(payload)[:200]})
+    return ctx.to_legacy_state()

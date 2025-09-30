@@ -1,5 +1,6 @@
+# test_db_connection.py
 import psycopg2
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text  # ← добавлен импорт text
 import logging
 
 # 🔹 DSN для подключения
@@ -15,7 +16,7 @@ try:
         host="localhost",
         port="5432",
         options=f"-c search_path={schema}",
-        client_encoding = "UTF8"
+        client_encoding="UTF8"
     )
     with conn.cursor() as cur:
         cur.execute(f"SET search_path TO {schema};")
@@ -26,9 +27,8 @@ try:
 except Exception as e:
     print("❌ psycopg2 ошибка:", e)
 
-
 print("\n=== ⚙️ Подключение через SQLAlchemy.create_engine ===")
-# Включаем логирование SQLAlchemy (покажет DSN и connect_args)
+# Включаем логирование SQLAlchemy
 logging.basicConfig()
 logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
 
@@ -41,7 +41,7 @@ try:
         }
     )
     with engine.connect() as conn:
-        result = conn.execute("SELECT version();")
+        result = conn.execute(text("SELECT version();"))  # ← обёрнуто в text()
         print("✅ SQLAlchemy:", result.scalar())
 except Exception as e:
     print("❌ SQLAlchemy ошибка:", e)

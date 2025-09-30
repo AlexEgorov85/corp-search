@@ -48,6 +48,8 @@ AgentEntry (примерный JSON/Python dict)
 from typing import Dict, Any
 import os
 
+from src.common import settings
+
 # runtime values (подхватываем из окружения, если заданы)
 POSTGRES_DSN = os.environ.get("POSTGRES_DSN")
 LLM_DEFAULT_PROFILE = os.environ.get("LLM_DEFAULT_PROFILE", "default")
@@ -61,79 +63,9 @@ TOOL_REGISTRY: Dict[str, Any] = {
             "Read-only операции: поиск книг, получение метаданных, получение глав.\n"
             "Planner должен ссылаться на операции (operation + params). Агент не генерирует SQL на уровне Planner'а."
         ),
-        # реализация — модуль и класс/фабрика (executor импортирует и инстанцирует)
         "implementation": "src.agents.BooksLibraryAgent.core:BooksLibraryAgent",
-        "operations": {
-            "list_books": {
-                "kind": "direct",
-                "description": (
-                    "Вернуть список книг по фильтру. Поддерживаемые фильтры: author, year_from, year_to, genre, title_contains."
-                ),
-                "params": {
-                    "author": {"type": "string", "required": False},
-                    "year_from": {"type": "integer", "required": False},
-                    "year_to": {"type": "integer", "required": False},
-                    "genre": {"type": "string", "required": False},
-                    "title_contains": {"type": "string", "required": False},
-                    "limit": {"type": "integer", "required": False}
-                },
-                "outputs": {
-                    "type": "array",
-                    "items": {"id": "integer", "title": "string", "year": "integer", "author_id": "integer"}
-                },
-                "priority": 30
-            },
-            "get_last_book": {
-                "kind": "direct",
-                "description": (
-                    "Вернуть метаданные последней (по году) книги указанного автора. В случае равенства годов — "
-                    "обрабатывать по параметру tie_break, если он указан."
-                ),
-                "params": {
-                    "author": {"type": "string", "required": True},
-                    "tie_break": {"type": "string", "required": False, "description": "например 'latest_by_year_then_id'"}
-                },
-                "outputs": {
-                    "type": "object",
-                    "properties": {"id": "integer", "title": "string", "year": "integer", "author_id": "integer"}
-                },
-                "priority": 40
-            },
-            "get_book_chapters": {
-                "kind": "direct",
-                "description": "Вернуть список глав/фрагментов для заданного book_id (включая текст и заголовки).",
-                "params": {
-                    "book_id": {"type": "integer", "required": True},
-                    "max_fragments": {"type": "integer", "required": False, "description": "максимум фрагментов/глав"}
-                },
-                "outputs": {
-                    "type": "array",
-                    "items": {"chapter_id": "integer", "title": "string", "text": "string"}
-                },
-                "priority": 25
-            },
-            "execute_safe_sql": {
-                "kind": "composed",
-                "description": (
-                    "Выполнить заранее валидированный SQL и вернуть табличный результат. "
-                    "SQL должен быть предварительно сгенерирован/проверен компонентами pipeline."
-                ),
-                "params": {
-                    "sql": {"type": "string", "required": True},
-                    "params": {"type": "object", "required": False},
-                    "max_rows": {"type": "integer", "required": False}
-                },
-                "outputs": {
-                    "type": "array",
-                    "items": {"type": "object"}
-                },
-                "priority": 10,
-                "enforce_validation": True,
-                "allowed_tables": ["authors", "books", "chapters", "genres", "book_genres"]
-            }
-        },
         "config": {
-            "db_uri": POSTGRES_DSN,
+            "db_uri": settings.POSTGRES_DSN,
             "llm_profile": LLM_DEFAULT_PROFILE,
             "allowed_tables": ["authors", "books", "chapters", "genres", "book_genres"],
             "max_rows": 1000

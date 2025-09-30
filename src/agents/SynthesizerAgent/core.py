@@ -1,37 +1,15 @@
 # src/agents/SynthesizerAgent/core.py
 # coding: utf-8
+import json
 import logging
 import os
 from typing import Any, Dict, Optional
 
+from src.agents.base import BaseAgent
 from src.services.llm_service.factory import ensure_llm
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
-
-# Поддержка разных версий langchain
-try:
-    from langchain.chains import LLMChain
-except Exception:
-    try:
-        from langchain import LLMChain  # type: ignore
-    except Exception:
-        LLMChain = None  # возможно LLMChain недоступен
-
-try:
-    from langchain_core.prompts import PromptTemplate
-except Exception:
-    try:
-        from langchain.prompts import PromptTemplate  # type: ignore
-    except Exception:
-        # очень простой fallback
-        class PromptTemplate:
-            def __init__(self, input_variables, template):
-                self.input_variables = input_variables
-                self.template = template
-
-            def format(self, **kwargs):
-                return self.template.format(**kwargs)
 
 
 PROMPT_TEMPLATE = (
@@ -41,29 +19,42 @@ PROMPT_TEMPLATE = (
     "Сформируй итоговый ответ и краткое reasoning:\n"
 )
 
-class SynthesizerAgent:
-    def __init__(self, config: Optional[Dict[str, Any]] = None, llm: Optional[Any] = None):
-        self.config = config or {}
-        # Если LLM не передан — создаём его из профиля
-        if llm is None:
-            profile = self.config.get("llm_profile") or os.getenv("LLM_DEFAULT_PROFILE", "default")
-            self.llm = ensure_llm(profile)
-            if self.llm is None:
-                LOG.warning(f"SynthesizerAgent: не удалось создать LLM из профиля '{profile}'")
-        else:
-            self.llm = llm
+class SynthesizerAgent(BaseAgent):
+    def __init__(self, descriptor: Dict[str, Any], config: Optional[Dict[str, Any]] = None):
+        super().__init__(descriptor, config or {})
+        # Получаем профиль из config
+        profile = self.config.get("llm_profile") or os.getenv("LLM_DEFAULT_PROFILE", "default")
+        self.llm = ensure_llm(profile)
+        self.prompt_template = PROMPT_TEMPLATE
 
-        self.prompt = PromptTemplate(
-            input_variables=["question", "context", "step_id"],
-            template=PROMPT_TEMPLATE
+    def _call_llm(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        question = state.get("question", "")
+        context_text = self._collect_context_text(state)
+        step_id = self._ensure_step_id(state)
+
+        prompt = self.prompt_template.format(
+            question=question,
+            context=context_text,
+            step_id=step_id
         )
-        self.chain = None
-        if self.llm and LLMChain is not None:
+
+        if self.llm is None:
+            return {"final_answer": "Нет модели для синтеза ответа", "reasoning": "LLM не загружена"}
+
+        try:
+            response = self.llm.generate(prompt)
+            # Пробуем распарсить как JSON
             try:
-                self.chain = LLMChain(llm=self.llm, prompt=self.prompt)
-            except Exception:
-                LOG.exception("Failed to create LLMChain for SynthesizerAgent")
-                self.chain = None
+                parsed = json.loads(response)
+                if isinstance(parsed, dict):
+                    return parsed
+            except:
+                pass
+            # Иначе возвращаем как текст
+            return {"final_answer": response, "reasoning": ""}
+        except Exception as e:
+            LOG.exception("Ошибка генерации в SynthesizerAgent: %s", e)
+            return {"final_answer": "Ошибка генерации ответа", "reasoning": str(e)}
 
     def _collect_context_text(self, state: Dict[str, Any]) -> str:
         parts = []
@@ -92,43 +83,6 @@ class SynthesizerAgent:
                 pass
         # если ничего нет — вернём пустую строку (ключ должен существовать)
         return ""
-
-    def _call_llm(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Вызывает LLM через chain (если есть), или fallback.
-        ВАЖНО: всегда передаём prompt_inputs с ключами question, context, step_id.
-        """
-        question = state.get("question", "") or ""
-        context_text = self._collect_context_text(state) or ""
-        step_id = self._ensure_step_id(state) or ""
-
-        prompt_inputs = {
-            "question": question,
-            "context": context_text,
-            "step_id": step_id  # ключ всегда присутствует
-        }
-
-        if self.chain:
-            try:
-                # Попытки вызвать chain в более-менее совместимом виде.
-                # 1) prefer __call__ (chain(prompt_inputs) -> dict)
-                try:
-                    out = self.chain(prompt_inputs)
-                except TypeError:
-                    # 2) older API: chain.run(**prompt_inputs)
-                    out = self.chain.run(**prompt_inputs)
-                # normalize out
-                if isinstance(out, dict):
-                    return out
-                if isinstance(out, str):
-                    return {"final_answer": out, "reasoning": ""}
-                return {"final_answer": str(out), "reasoning": ""}
-            except Exception as e:
-                LOG.exception("SynthesizerAgent.chain invocation failed: %s", e)
-                # идём в fallback
-        # fallback
-        LOG.warning("No LLM or chain available for SynthesizerAgent; using fallback synthesizer.")
-        return {"final_answer": "Нет модели для синтеза ответа", "reasoning": "SynthesizerAgent не смог вызвать LLM"}
 
     def execute(self, query: str = "", context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -169,3 +123,5 @@ class SynthesizerAgent:
                 "structured": {"final_answer": "Нет модели для синтеза ответа", "reasoning": str(e)},
                 "metadata": {}
             }
+        
+

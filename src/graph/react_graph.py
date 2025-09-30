@@ -9,7 +9,6 @@ from src.graph.nodes.next_subquestion import next_subquestion_node
 from src.graph.nodes.synthesizer import synthesizer_node
 from src.agents.registry import AgentRegistry
 
-
 class AppState(TypedDict, total=False):
     question: str
     agents_config: Dict[str, Any]
@@ -18,8 +17,7 @@ class AppState(TypedDict, total=False):
     step_outputs: Dict[str, Any]
     final_answer: str
     finished: bool
-    current_call: Dict[str, Any]
-
+    execution: Dict[str, Any]
 
 def build_react_graph(agent_registry: AgentRegistry):
     def planner(state): return planner_node(state, agent_registry)
@@ -38,24 +36,31 @@ def build_react_graph(agent_registry: AgentRegistry):
     graph.set_entry_point("planner")
     graph.add_edge("planner", "next_subquestion")
 
-    graph.add_conditional_edges(
-        "next_subquestion",
-        lambda state: "reasoner" if not state.get("finished") else "synthesizer"
-    )
+    def next_subq_router(state):
+        if state.get("finished"):
+            return "synthesizer"
+        current_id = state.get("execution", {}).get("current_subquestion_id")
+        if current_id:
+            return "reasoner"
+        else:
+            return "synthesizer"
+
+    graph.add_conditional_edges("next_subquestion", next_subq_router)
 
     def reasoner_router(state):
-        current_call = state.get("current_call", {})
-        decision = current_call.get("decision", {})
+        exec_state = state.get("execution", {}) or {}
+        current_call = exec_state.get("current_call", {}) or {}
+        decision = current_call.get("decision", {}) or {}
         action = decision.get("action")
         if action == "call_tool":
             return "executor"
-        elif action in ("final_answer", "skip"):
-            return "next_subquestion"
         else:
-            return "executor"
+            return "next_subquestion"
 
     graph.add_conditional_edges("reasoner", reasoner_router)
-    graph.add_edge("executor", "reasoner")
-    graph.add_edge("synthesizer", END)
 
+    # 🔑 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: executor → next_subquestion (а не → reasoner)
+    graph.add_edge("executor", "next_subquestion")
+
+    graph.add_edge("synthesizer", END)
     return graph.compile()
