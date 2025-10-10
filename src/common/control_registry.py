@@ -68,20 +68,12 @@ CONTROL_REGISTRY: Dict[str, Any] = {
         "config": {"llm_profile": LLM_DEFAULT_PROFILE},
         "meta": {"role": "control", "maintainers": ["platform-team"]}
     },
+
     "SynthesizerAgent": {
         "name": "SynthesizerAgent",
         "title": "Синтезатор ответа (SynthesizerAgent)",
         "description": "Агрегирует результаты шагов плана и формирует финальный ответ/артефакты для пользователя.",
         "implementation": "src.agents.SynthesizerAgent.core:SynthesizerAgent",
-        "operations": {
-            "synthesize": {
-                "kind": "direct",
-                "description": "На основании outputs шагов и метаданных плана формирует итоговый ответ и вспомогательные данные (evidence).",
-                "params": {"step_outputs": {"type": "object", "required": True}, "plan": {"type": "object", "required": True}},
-                "outputs": {"type": "object", "properties": {"final_answer": "string", "evidence": "object"}},
-                "priority": 70
-            }
-        },
         "config": {"llm_profile": LLM_DEFAULT_PROFILE},
         "meta": {"role": "control", "maintainers": ["platform-team"]}
     }

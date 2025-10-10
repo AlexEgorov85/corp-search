@@ -35,7 +35,7 @@ class BooksLibraryAgent(BaseAgent):
         if db_uri:
             try:
                 self._engine = create_engine(db_uri)
-                LOG.info("BooksLibraryAgent: engine создан для db_uri=%s", db_uri)
+                # LOG.info("BooksLibraryAgent: engine создан для db_uri=%s", db_uri)
             except Exception:
                 LOG.exception("Ошибка создания engine из db_uri")
         else:

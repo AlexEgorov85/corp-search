@@ -27,11 +27,11 @@ LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 LLM_PROFILES: Dict[str, Dict[str, Any]] = {
     "default": {
         "backend": os.environ.get("LLM_BACKEND", "llama_cpp"),  # пример: 'llama_cpp', 'ollama', 'openai'
-        "model_path": os.environ.get("LLM_MODEL_PATH", r"C:\phi-3\Phi-3-mini-4k-instruct-fp16.gguf"),
-        "n_ctx": int(os.environ.get("LLM_N_CTX", "4090")),
-        "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.1")),
+        "model_path": os.environ.get("LLM_MODEL_PATH", r"C:\Qwen3\Qwen3-4B-Instruct-2507-F16.gguf"),
+        "n_ctx": int(os.environ.get("LLM_N_CTX", "16384")),
+        "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.3")),
         "top_p": float(os.environ.get("LLM_TOP_P", "0.9")),
-        "max_tokens": int(os.environ.get("LLM_MAX_TOKENS", "1024")),
+        "max_tokens": int(os.environ.get("LLM_MAX_TOKENS", "8192")),
         "backend_kwargs": {
             "n_threads": int(os.environ.get("LLM_THREADS", "8")),
             "use_gpu": os.environ.get("LLM_USE_GPU", "false").lower() in ("1", "true", "yes"),

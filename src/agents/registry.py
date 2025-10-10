@@ -349,8 +349,3 @@ class AgentRegistry:
         ops = self._resolve_operations(agent_name, entry)
         return list(ops.keys())
 
-    def dump_registry_summary(self) -> Dict[str, Any]:
-        """Вернуть краткую сводку реестра: list agents и operations count."""
-        def summarize(reg: Dict[str, Dict[str, Any]]):
-            return {name: {"operations": len(self._resolve_operations(name, entry)), "title": entry.get("title")} for name, entry in reg.items()}
-        return {"tools": summarize(self.tool_registry), "control": summarize(self.control_registry)}

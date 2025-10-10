@@ -1,7 +1,8 @@
+# src/agents/ReasonerAgent/__init__.py
 # coding: utf-8
 """
-Пакет ReasonerAgent — агент принятия решений (ReAct-style).
-Экспортирует ReasonerAgent.
+ReasonerAgent package.
+Экспортирует основной класс ReasonerAgent.
 """
 from .core import ReasonerAgent
 

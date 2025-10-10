@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from src.agents.operations_base import BaseOperation
-from src.services.results.agent_result import AgentResult
+from src.model.agent_result import AgentResult
 from src.services.llm_service.factory import ensure_llm
 
 LOG = logging.getLogger(__name__)
@@ -298,10 +298,14 @@ class BaseAgent:
             if not isinstance(result, AgentResult):
                 raise TypeError(f"Операция должна вернуть AgentResult, получено: {type(result)}")
 
-            # Добавляем метаданные
+            # Явно устанавливаем поля agent и operation
+            if result.agent is None:
+                result.agent = self.name
+            if result.operation is None:
+                result.operation = operation
+
+            # Добавляем elapsed_s в metadata
             meta = getattr(result, "metadata", {}) or {}
-            meta.setdefault("agent", self.name)
-            meta.setdefault("operation", operation)
             meta.setdefault("elapsed_s", time.time() - start)
             result.metadata = meta
             return result

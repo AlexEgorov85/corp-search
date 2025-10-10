@@ -1,84 +1,199 @@
 # src/graph/nodes/executor.py
-# coding: utf-8
 """
-executor_node — узел, который выполняет вызовы инструментов (tool agents).
+Узел выполнения инструментов (Executor Node).
 
-Изменения:
-- Перенёс всю логику работы с execution/current_call/steps на GraphContext API
-- Сохранил поведение: инстанцируем инструмент из tool registry (control=False),
-  вызываем execute_operation(operation, params, context) и в зависимости от AgentResult
-  обновляем step.raw_output/final_result/status/error.
-- Всегда очищаем current_call в конце обработки (успех/ошибка).
+Основная задача:
+  - Получить решение от Reasoner (`selected_tool`).
+  - При необходимости — **автоматически подставить параметры** из контекста,
+    если операция предназначена для работы с контекстом (а не с ручными параметрами).
+  - Вызвать агент с этими параметрами.
+  - Сохранить результат в контекст через `record_tool_execution_result`.
+
+Особенности:
+  - Для операций вроде `validate_result`, `synthesize` параметры **не передаются вручную** из Reasoner.
+    Вместо этого Executor **инжектит** нужные данные из `GraphContext`.
+  - Это позволяет Reasoner оставаться чистым: он только выбирает инструмент, не заботясь о деталях параметров.
+  - Поддержка расширения: легко добавить новые "контекстные" операции.
+
+Примеры:
+  - Reasoner выбирает:
+      selected_tool = {"agent": "ResultValidatorAgent", "operation": "validate_result"}
+    Executor автоматически подставляет:
+      params = {
+          "subquestion_text": ctx.get_subquestion_text(step_id),
+          "raw_output": ctx.get_step_result(step_id)
+      }
+
+  - Reasoner выбирает:
+      selected_tool = {"agent": "BooksLibraryAgent", "operation": "list_books", "params": {"author": "Пушкин"}}
+    Executor оставляет params как есть.
 """
+
 from __future__ import annotations
-from typing import Dict, Any
-
 import logging
+from typing import Any, Dict, Optional
 
-from src.graph.context_model import GraphContext
-from src.services.results.agent_result import AgentResult
+from src.model.agent_result import AgentResult
+from src.model.context.base import (
+    append_history_event,
+    get_current_step_id,
+    get_execution_step,
+)
+from src.model.context.context import GraphContext
+
 
 LOG = logging.getLogger(__name__)
 
 
-def executor_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
-    ctx = state if isinstance(state, GraphContext) else GraphContext.from_state_dict(state)
+def _inject_contextual_params(
+    tool_call: Dict[str, Any],
+    ctx: GraphContext,
+    step_id: str
+) -> Dict[str, Any]:
+    """
+    Автоматически подставляет параметры для операций, которые работают с контекстом выполнения.
 
-    current_call = ctx.execution.current_call
-    if not current_call or not current_call.decision:
-        ctx.append_history({"type": "executor_no_current_call"})
-        return ctx.to_legacy_state()
+    Эта функция проверяет имя агента и операции и, если это "контекстная" операция,
+    формирует параметры на основе текущего состояния шага и плана.
 
-    decision = current_call.decision or {}
-    step_id = current_call.step_id or ctx.execution.current_subquestion_id
+    Поддерживаемые операции:
+      - ResultValidatorAgent.validate_result
+      - DataAnalysisAgent.analyze
 
-    action = (decision.get("action") or "").lower()
-    if action != "call_tool":
-        ctx.append_history({"type": "executor_skip_non_calltool", "action": action, "step_id": step_id})
-        # leave decision intact (other nodes may handle it), but return state
-        return ctx.to_legacy_state()
+    Args:
+        tool_call (dict): Решение от Reasoner, содержащее "agent", "operation", и опционально "params".
+        ctx (GraphContext): Текущий контекст выполнения графа.
+        step_id (str): ID текущего шага.
 
-    tool_name = decision.get("tool")
-    operation = decision.get("operation")
-    params = decision.get("params", {}) or {}
+    Returns:
+        Dict[str, Any]: Готовые параметры для вызова операции.
+    """
+    agent_name = tool_call["agent"]
+    operation_name = tool_call["operation"]
+    base_params = tool_call.get("params", {})
 
-    if not tool_name or not operation:
-        ctx.set_step_error(step_id or "unknown", "Executor: invalid decision missing tool/operation", stage="validate_decision")
-        ctx.clear_current_call()
-        return ctx.to_legacy_state()
+    # === 1. ResultValidatorAgent.validate_result ===
+    if agent_name == "ResultValidatorAgent" and operation_name == "validate_result":
+        return {
+            "subquestion_text": ctx.get_subquestion_text(step_id),
+            "raw_output": ctx.get_step_result(step_id)
+        }
 
-    # Инстанцируем инструмент (tool) из tool_registry
-    try:
-        tool = agent_registry.instantiate_agent(tool_name, control=False)
-    except Exception as e:
-        ctx.set_step_error(step_id, f"Executor: instantiate tool '{tool_name}' failed: {e}", stage="instantiate_tool")
-        ctx.clear_current_call()
-        return ctx.to_legacy_state()
+    # === 2. DataAnalysisAgent (если потребуется) ===
+    if agent_name == "DataAnalysisAgent" and operation_name == "analyze":
+        return {
+            "subquestion_text": ctx.get_subquestion_text(step_id),
+            "raw_output": ctx.get_step_result(step_id)
+        }
 
-    # Выполним операцию
-    try:
-        # Поддерживаем интерфейс execute_operation(operation, params, context)
-        res = tool.execute_operation(operation, params, context={"step_id": step_id})
-    except Exception as e:
-        ctx.set_step_error(step_id, f"Executor: tool.execute threw: {e}", stage="execute_tool")
-        ctx.clear_current_call()
-        return ctx.to_legacy_state()
+    # === По умолчанию: возвращаем параметры как есть ===
+    return base_params
+
+
+def _execute_tool_call(
+    ctx: GraphContext,
+    tool_call: Dict[str, Any],
+    agent_registry,
+    step_id: str
+) -> Any:
+    """
+    Выполняет вызов инструмента через агентский реестр.
+
+    Args:
+        ctx (GraphContext): Контекст выполнения.
+        tool_call (dict): Описание вызова инструмента.
+        agent_registry: Реестр агентов.
+        step_id (str): ID шага (для логирования и инжекта параметров).
+
+    Returns:
+        AgentResult: Результат выполнения операции.
+
+    Raises:
+        RuntimeError: При ошибках инициализации или выполнения.
+    """
+    agent_name = tool_call["agent"]
+    operation = tool_call["operation"]
+
+    # Автоматическая подстановка параметров для контекстных операций
+    params = _inject_contextual_params(tool_call, ctx, step_id)
+
+    LOG.info("⚙️  Executor: запускаем %s.%s", agent_name, operation)
+    agent = agent_registry.instantiate_agent(agent_name)
+
+    if not agent:
+        raise RuntimeError(f"Агент '{agent_name}' не найден в реестре")
+
+    res = agent.execute_operation(operation, params=params, context=ctx.to_dict())
 
     if not isinstance(res, AgentResult):
-        ctx.set_step_error(step_id, f"Executor: unexpected tool return type: {type(res)}", stage="execute_tool")
-        ctx.clear_current_call()
-        return ctx.to_legacy_state()
+        raise RuntimeError(f"Агент '{agent_name}' вернул не AgentResult: {type(res)}")
 
-    if res.is_error():
-        ctx.set_step_error(step_id, res.content or res.error or res.message or "tool returned error", stage="tool")
-        ctx.clear_current_call()
-        return ctx.to_legacy_state()
+    if res.status != "ok":
+        raise RuntimeError(f"Операция завершилась с ошибкой: {res.error or res.content}")
 
-    # Успешный результат
-    payload = res.structured if res.structured is not None else (res.content if hasattr(res, "content") else None)
-    # Сохраняем как raw_output / final_result в шаге; семантика зависит от инструмента —
-    # чтобы не ломать текущую логику, просто положим payload в final_result (как раньше большинство узлов делало)
-    ctx.set_step_result(step_id or "unknown", payload)
-    ctx.clear_current_call()
-    ctx.append_history({"type": "executor_tool_success", "tool": tool_name, "operation": operation, "step_id": step_id, "rows_preview": str(payload)[:200]})
-    return ctx.to_legacy_state()
+    return res
+
+
+def executor_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
+    """
+    Основной узел выполнения инструментов.
+
+    Логика:
+      1. Получить текущий шаг из контекста.
+      2. Получить решение от Reasoner (`selected_tool`).
+      3. Если решение есть — выполнить инструмент.
+      4. Сохранить результат (успех или ошибка) в контекст.
+      5. Залогировать событие.
+
+    Args:
+        state (Dict[str, Any]): Состояние графа (GraphContext в виде dict).
+        agent_registry: Реестр агентов (обязателен).
+
+    Returns:
+        Dict[str, Any]: Обновлённое состояние графа.
+    """
+    if agent_registry is None:
+        raise ValueError("executor_node: agent_registry is required")
+
+    ctx = state if isinstance(state, GraphContext) else GraphContext.from_state_dict(state)
+    step_id = get_current_step_id(ctx)
+
+    if not step_id:
+        LOG.warning("⚠️ Executor: нет текущего шага")
+        append_history_event(ctx, {"type": "executor_no_step"})
+        return ctx.to_dict()
+
+    step = get_execution_step(ctx, step_id)
+    if not step:
+        LOG.warning("⚠️ Executor: шаг %s не найден", step_id)
+        return ctx.to_dict()
+
+    # === Получаем вызов инструмента через API контекста ===
+    tool_call = ctx.get_tool_call_for_executor(step_id)
+    if not tool_call:
+        LOG.info("ℹ️  Executor: нет selected_tool для шага %s", step_id)
+        return ctx.to_dict()
+
+    try:
+        result = _execute_tool_call(ctx, tool_call, agent_registry, step_id)
+        # === Сохраняем результат через API контекста ===
+        ctx.record_tool_execution_result(step_id, result)
+        LOG.info("✅  Executor: успешно выполнил операцию для шага %s", step_id)
+        append_history_event(ctx, {
+            "type": "executor_success",
+            "step_id": step_id,
+            "agent": tool_call["agent"],
+            "operation": tool_call["operation"]
+        })
+    except Exception as e:
+        error_msg = str(e)
+        LOG.exception("💥 Ошибка при выполнении инструмента для шага %s: %s", step_id, e)
+        # === Сохраняем ошибку через API контекста ===
+        ctx.record_tool_execution_result(step_id, result=None, error=error_msg)
+        append_history_event(ctx, {
+            "type": "executor_error",
+            "step_id": step_id,
+            "error": error_msg
+        })
+
+    return ctx.to_dict()

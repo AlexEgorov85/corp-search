@@ -1,8 +1,7 @@
 # src/agents/SynthesizerAgent/__init__.py
-# coding: utf-8
 """
-Пакет SynthesizerAgent — итоговый синтезатор ответов.
-Экспортируем основной класс SynthesizerAgent.
+Инициализация пакета SynthesizerAgent.
+Экспортирует основной класс для удобного импорта.
 """
 from .core import SynthesizerAgent
 

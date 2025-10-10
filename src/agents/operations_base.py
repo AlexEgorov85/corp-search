@@ -4,7 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 
-from src.services.results.agent_result import AgentResult
+from src.model.agent_result import AgentResult
 
 LOG = logging.getLogger(__name__)
 

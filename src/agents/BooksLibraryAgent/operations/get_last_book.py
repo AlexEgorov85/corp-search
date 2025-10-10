@@ -9,8 +9,10 @@
 Сортировка: по году (DESC), затем по id (DESC).
 """
 from src.agents.operations_base import BaseOperation, OperationKind
-from src.services.results.agent_result import AgentResult
+
 from sqlalchemy import text
+
+from src.model.agent_result import AgentResult
 
 class Operation(BaseOperation):
     kind = OperationKind.DIRECT
@@ -30,11 +32,11 @@ class Operation(BaseOperation):
 
         author = params["author"]
         sql = """
-        SELECT b.id, b.title, b.year, b.author_id
-        FROM books b
-        JOIN authors a ON b.author_id = a.id
-        WHERE a.name ILIKE :author
-        ORDER BY b.year DESC, b.id DESC
+        SELECT b.id, b.title, b.publication_date, b.author_id
+        FROM "Lib".books b
+        JOIN "Lib".authors a ON b.author_id = a.id
+        WHERE a.last_name ILIKE :author
+        ORDER BY b.publication_date DESC, b.id DESC
         LIMIT 1
         """
         try:

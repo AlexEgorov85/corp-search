@@ -3,110 +3,22 @@
 """
 planner_node — узел планировщика.
 Цель: сгенерировать план (декомпозицию вопроса на подвопросы) с помощью PlannerAgent.
-
 Контракт:
-- Вход: dict с ключом "question"
-- Выход: dict с обновлённым execution.steps, current_subquestion_id и memory["plan"]
-
-Пример входа:
-{
-    "question": "Найди книги Пушкина и укажи главного героя в последней из них?"
-}
-
-Пример выхода (после успешного plan):
-{
-    "question": "...",
-    "execution": {
-        "current_subquestion_id": "q1",
-        "steps": {
-            "q1": {"id": "q1", "subquestion_text": "Какие книги написал Пушкин?", "status": "pending"},
-            "q2": {"id": "q2", "subquestion_text": "Какая из книг — последняя?", "status": "pending"},
-            "q3": {"id": "q3", "subquestion_text": "Кто главный герой в последней книге?", "status": "pending"}
-        }
-    },
-    "memory": {
-        "plan": {
-            "subquestions": [
-                {"id": "q1", "text": "Какие книги написал Пушкин?", "depends_on": []},
-                {"id": "q2", "text": "Какая из книг — последняя?", "depends_on": ["q1"]},
-                {"id": "q3", "text": "Кто главный герой в последней книге?", "depends_on": ["q2"]}
-            ]
-        }
-    }
-}
+- Вход: GraphContext с вопросом, установленным через set_question()
+- Выход: GraphContext с заполненным ctx.plan как объект Plan (Pydantic)
 """
+
 from __future__ import annotations
 import logging
-from typing import Dict, Any, Optional
-from src.graph.context_model import GraphContext
-from src.graph.context_ops import (
-    get_question,
-    set_plan,
-    ensure_step,
-    set_current_subquestion_id,
-    append_history_event,
-)
-from src.services.results.agent_result import AgentResult
+from typing import Any, Dict, Optional
+from src.model.agent_result import AgentResult
+from src.model.context.base import append_history_event, get_question, set_plan
+from src.model.context.context import GraphContext
+from src.model.context.models import Plan, SubQuestion
+from src.utils.utils import build_tool_registry_snapshot
+
 
 LOG = logging.getLogger(__name__)
-
-
-def _build_tool_registry_snapshot(full_tool_registry: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Создаёт упрощённую и безопасную копию tool_registry для передачи в PlannerAgent.
-    Удаляет чувствительные поля (implementation, config и т.д.), оставляя только:
-      - title
-      - description
-      - operations (с их kind, description, params, outputs)
-
-    Пример входа:
-    {
-        "BooksLibraryAgent": {
-            "implementation": "src.agents.BooksLibraryAgent.core:BooksLibraryAgent",
-            "config": {"db_uri": "..."},
-            "title": "База книг",
-            "description": "Доступ к книгам и авторам",
-            "operations": {
-                "list_books": {"description": "Получить список книг", "kind": "direct"}
-            }
-        }
-    }
-
-    Пример выхода:
-    {
-        "BooksLibraryAgent": {
-            "title": "База книг",
-            "description": "Доступ к книгам и авторам",
-            "operations": {
-                "list_books": {"description": "Получить список книг", "kind": "direct"}
-            }
-        }
-    }
-    """
-    snapshot = {}
-    for name, meta in full_tool_registry.items():
-        if not isinstance(meta, dict):
-            snapshot[name] = {}
-            continue
-        safe_meta = {
-            "title": meta.get("title", ""),
-            "description": meta.get("description", ""),
-            "operations": {}
-        }
-        ops = meta.get("operations", {})
-        if isinstance(ops, dict):
-            for op_name, op_meta in ops.items():
-                if not isinstance(op_meta, dict):
-                    safe_meta["operations"][op_name] = {"description": ""}
-                    continue
-                safe_meta["operations"][op_name] = {
-                    "kind": op_meta.get("kind", "direct"),
-                    "description": op_meta.get("description", ""),
-                    "params": op_meta.get("params", {}),
-                    "outputs": op_meta.get("outputs", {})
-                }
-        snapshot[name] = safe_meta
-    return snapshot
 
 
 def planner_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
@@ -114,24 +26,24 @@ def planner_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
     Основная функция узла планировщика.
     Логика:
       1. Преобразовать входной state в GraphContext.
-      2. Получить вопрос.
+      2. Получить вопрос через get_question(ctx).
       3. Если вопрос пуст — завершить с ошибкой.
       4. Инициализировать PlannerAgent.
       5. Собрать snapshot инструментов.
       6. Вызвать операцию "plan".
-      7. Сохранить результат в ctx.memory["plan"] и создать шаги.
+      7. Сохранить результат в ctx.plan через set_plan(ctx, plan_obj).
       8. В случае ошибки — использовать fallback (1 шаг).
     """
-    # 🔁 Преобразуем входной dict в GraphContext (единственный канонический контекст)
+    # 🔁 Преобразуем входной dict в GraphContext
     ctx = state if isinstance(state, GraphContext) else GraphContext.from_state_dict(state)
     LOG.info("🔄 planner_node: начало обработки")
 
-    # 📥 Получаем вопрос из контекста (через функцию)
+    # 📥 Получаем вопрос через API контекста
     question = get_question(ctx) or ""
     if not question.strip():
         LOG.warning("⚠️ planner_node: вопрос отсутствует")
         append_history_event(ctx, {"type": "planner_no_question"})
-        return ctx.to_legacy_state()
+        return ctx.to_dict()
 
     LOG.info(f"📝 planner_node: исходный вопрос: {question}")
 
@@ -139,7 +51,6 @@ def planner_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
     if agent_registry is not None:
         planner_agent = None
         try:
-            # 🧪 Инстанцируем PlannerAgent
             planner_agent = agent_registry.instantiate_agent("PlannerAgent", control=True)
             LOG.debug("✅ planner_node: PlannerAgent успешно создан")
         except Exception as e:
@@ -148,12 +59,11 @@ def planner_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
 
         if planner_agent is not None:
             try:
-                # 📦 Собираем snapshot инструментов
-                full_tool_registry = agent_registry.tool_registry
-                tool_registry_snapshot = _build_tool_registry_snapshot(full_tool_registry)
+                # 📦 Собираем snapshot инструментов через AgentRegistry
+                tool_registry_snapshot = build_tool_registry_snapshot(agent_registry)
                 LOG.debug(f"🛠️ planner_node: собран snapshot инструментов для {len(tool_registry_snapshot)} агентов")
 
-                # 🚀 Вызываем операцию plan с обязательными параметрами
+                # 🚀 Вызываем операцию plan
                 params = {
                     "question": question,
                     "tool_registry_snapshot": tool_registry_snapshot
@@ -163,33 +73,34 @@ def planner_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
 
                 # ✅ Обработка успешного результата
                 if isinstance(res, AgentResult) and res.status == "ok":
-                    plan_struct = res.structured or res.content or {}
+                    # Используем поле output
+                    plan_struct = res.output.get('plan') if isinstance(res.output, dict) else {}
                     LOG.info(f"✅ planner_node: план успешно сгенерирован. Структура: {plan_struct}")
 
-                    # 💾 Сохраняем план в ctx.memory (обязательно!)
-                    set_plan(ctx, plan_struct)
+                    # 💾 Сохраняем план как Pydantic-модель Plan
+                    subquestions = []
+                    raw_subs = plan_struct.get("subquestions", [])
+                    if not isinstance(raw_subs, list):
+                        LOG.error("❌ planner_node: 'subquestions' не является списком")
+                        raw_subs = []
 
-                    # ➕ Создаём шаги из подвопросов
-                    subqs = plan_struct.get("subquestions") if isinstance(plan_struct, dict) else None
-                    if subqs:
-                        first_id: Optional[str] = None
-                        for s in subqs:
-                            sid = s.get("id") or f"sq_{len(ctx.execution.steps) + 1}"
-                            text = s.get("text") or s.get("title") or ""
-                            LOG.debug(f"➕ planner_node: создаём шаг {sid}: {text}")
-                            ensure_step(ctx, sid, subquestion_text=text)
-                            if first_id is None:
-                                first_id = sid
+                    for sq in raw_subs:
+                        if not isinstance(sq, dict):
+                            continue
+                        subquestions.append(SubQuestion(
+                            id=str(sq.get("id", "")),
+                            text=str(sq.get("text", "")),
+                            depends_on=sq.get("depends_on", [])
+                        ))
 
-                        if first_id:
-                            set_current_subquestion_id(ctx, first_id)
-                            LOG.info(f"🎯 planner_node: установлен текущий подвопрос: {first_id}")
+                    plan_obj = Plan(subquestions=subquestions)
+                    set_plan(ctx, plan_obj)  # ← Используем API контекста
 
                     append_history_event(ctx, {
                         "type": "planner_agent_generated_plan",
                         "plan_summary": str(plan_struct)[:300]
                     })
-                    return ctx.to_legacy_state()
+                    return ctx.to_dict()
 
                 else:
                     # ❌ Ошибка от агента
@@ -209,14 +120,13 @@ def planner_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
 
     # 🛟 FALLBACK: создаём один шаг с исходным вопросом
     LOG.warning("⚠️ planner_node: переход в fallback-режим")
-    step_id = "q1"
-    ensure_step(ctx, step_id, subquestion_text=question, status="pending")
-    set_current_subquestion_id(ctx, step_id)
-    fallback_plan = {"subquestions": [{"id": step_id, "text": question}]}
-    set_plan(ctx, fallback_plan)  # ← важно: сохраняем даже fallback-план!
-    LOG.info(f"🛡️ planner_node: создан fallback-план с шагом {step_id}")
+    fallback_plan = Plan(subquestions=[
+        SubQuestion(id="q1", text=question, depends_on=[])
+    ])
+    set_plan(ctx, fallback_plan)  # ← Используем API контекста
+    LOG.info("🛡️ planner_node: создан fallback-план с шагом q1")
     append_history_event(ctx, {
         "type": "planner_fallback_created_step",
-        "step_id": step_id
+        "step_id": "q1"
     })
-    return ctx.to_legacy_state()
+    return ctx.to_dict()

@@ -1,7 +1,7 @@
-# coding: utf-8
+# src/agents/DataAnalysisAgent/__init__.py
 """
-Публичный API пакета DataAnalysisAgent.
-Экспортируется класс DataAnalysisAgent.
+Инициализация пакета DataAnalysisAgent.
+Экспортирует основной класс для удобного импорта.
 """
 from .core import DataAnalysisAgent
 

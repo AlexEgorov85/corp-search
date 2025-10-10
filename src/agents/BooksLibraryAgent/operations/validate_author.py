@@ -1,16 +1,8 @@
 # src/agents/BooksLibraryAgent/operations/validate_author.py
-"""
-Операция: валидация автора.
-
-Используется ReasonerAgent для нормализации сущностей:
-- "Пушкн" → "Пушкин, Александр Сергеевич"
-- "Достоевский Ф.М." → "Достоевский, Фёдор Михайлович"
-
-Реализует семантический поиск через ILIKE ANY.
-"""
 from src.agents.operations_base import BaseOperation, OperationKind
-from src.services.results.agent_result import AgentResult
 from sqlalchemy import text
+
+from src.model.agent_result import AgentResult
 
 class Operation(BaseOperation):
     kind = OperationKind.VALIDATION
@@ -24,24 +16,46 @@ class Operation(BaseOperation):
     }
 
     def run(self, params: dict, context: dict, agent) -> AgentResult:
-        if not hasattr(agent, 'engine') or agent.engine is None:
-            return AgentResult.error("База данных недоступна")
-
         candidates = params.get("candidates", [])
+        if not hasattr(agent, 'engine') or agent.engine is None:
+            return AgentResult.error(
+                message="База данных недоступна",
+                stage="entity_validation",
+                entity_type="author",
+                input_params=params,
+                summary="Ошибка: база данных недоступна"
+            )
         if not candidates:
-            return AgentResult.ok(structured={"authors": []})
-
+            return AgentResult.ok(
+                stage="entity_validation",
+                entity_type="author",
+                input_params=params,
+                output={"validated": []},
+                summary="Проведена валидация сущности 'автор' для пустого списка кандидатов"
+            )
         placeholders = ", ".join([f":cand{i}" for i in range(len(candidates))])
         values = {f"cand{i}": cand for i, cand in enumerate(candidates)}
         sql = f"""
-        SELECT DISTINCT name
-        FROM authors
-        WHERE name ILIKE ANY(ARRAY[{placeholders}])
+        SELECT DISTINCT last_name 
+        FROM "Lib".authors
+        WHERE last_name ILIKE ANY(ARRAY[{placeholders}])
         """
         try:
             with agent.engine.connect() as conn:
                 res = conn.execute(text(sql), values)
                 authors = [{"name": row[0]} for row in res.fetchall()]
-            return AgentResult.ok(structured={"authors": authors})
+            return AgentResult.ok(
+                stage="entity_validation",
+                entity_type="author",
+                input_params=params,
+                output={"validated": authors},
+                summary=f"Проведена валидация сущности 'автор' для кандидатов: {candidates}"
+            )
         except Exception as e:
-            return AgentResult.error(f"Ошибка валидации автора: {e}")
+            return AgentResult.error(
+                message=f"Ошибка валидации автора: {e}",
+                stage="entity_validation",
+                entity_type="author",
+                input_params=params,
+                summary="Ошибка при выполнении SQL-запроса валидации автора"
+            )

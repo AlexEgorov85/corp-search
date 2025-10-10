@@ -9,7 +9,7 @@
 Возвращает список глав с текстом и заголовками.
 """
 from src.agents.operations_base import BaseOperation, OperationKind
-from src.services.results.agent_result import AgentResult
+from src.model.agent_result import AgentResult
 from sqlalchemy import text
 
 class Operation(BaseOperation):

@@ -19,7 +19,7 @@
 - Валидация схемы.
 """
 from src.agents.operations_base import BaseOperation, OperationKind
-from src.services.results.agent_result import AgentResult
+from src.model.agent_result import AgentResult
 from src.agents.BooksLibraryAgent.prompt import sql_generation_prompt, sql_retry_prompt
 from src.agents.BooksLibraryAgent.validation import validate_sql_against_schema
 import time

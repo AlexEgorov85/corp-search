@@ -4,13 +4,11 @@
 Используется для запросов вида:
 - "Какие книги написал Пушкин?"
 - "Книги Достоевского"
-
 Поддерживает только фильтрацию по фамилии автора (поле authors.last_name).
 """
 from src.agents.operations_base import BaseOperation, OperationKind
-from src.services.results.agent_result import AgentResult
 from sqlalchemy import text
-
+from src.model.agent_result import AgentResult
 
 class Operation(BaseOperation):
     kind = OperationKind.DIRECT
@@ -26,11 +24,15 @@ class Operation(BaseOperation):
 
     def run(self, params: dict, context: dict, agent) -> AgentResult:
         if not hasattr(agent, 'engine') or agent.engine is None:
-            return AgentResult.error("База данных недоступна")
+            return AgentResult.error(
+                message="База данных недоступна",
+                stage="data_fetch",
+                input_params=params,
+                summary="Ошибка: отсутствует подключение к БД"
+            )
 
         author_last_name = params["author"]
         limit = min(int(params.get("limit", 100)), 1000)
-
         sql = """
         SELECT b.id as book_id, b.title, b.publication_date, b.author_id
         FROM "Lib".books b
@@ -43,6 +45,18 @@ class Operation(BaseOperation):
             with agent.engine.connect() as conn:
                 res = conn.execute(text(sql), {"last_name": author_last_name, "limit": limit})
                 rows = [dict(row) for row in res.mappings().all()]
-            return AgentResult.ok(structured=rows)
+
+            return AgentResult.ok(
+                stage="data_fetch",
+                input_params=params,
+                output=rows,
+                summary=f"Успешно получены книги автора '{author_last_name}' (всего: {len(rows)})."
+            )
+
         except Exception as e:
-            return AgentResult.error(f"Ошибка выполнения SQL: {e}")
+            return AgentResult.error(
+                message=f"Ошибка выполнения SQL: {e}",
+                stage="data_fetch",
+                input_params=params,
+                summary=f"Не удалось получить книги автора '{author_last_name}'."
+            )

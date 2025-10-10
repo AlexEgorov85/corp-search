@@ -1,92 +1,83 @@
 # src/graph/nodes/reasoner.py
-# coding: utf-8
-"""
-reasoner_node — узел, который вызывает ReasonerAgent.step и применяет его результат.
-
-Изменения:
-- Использует GraphContext.from_state_dict() для входного state
-- Гарантирует, что при наличии 'decision' в AgentResult.structured current_call записывается через ctx.set_current_call()
-- Обновления шага (updated_step) применяются через StepState поля
-- Ошибки reasoner'а сохраняются в step.error и в history
-- Возвращает ctx.to_legacy_state()
-"""
 from __future__ import annotations
-from typing import Dict, Any, Optional
-
+from typing import Any, Dict, Optional
 import logging
-
-from src.graph.context_model import GraphContext
-from src.services.results.agent_result import AgentResult
+from src.model.agent_result import AgentResult
+from src.model.context.base import (
+    append_history_event,
+    get_current_step_id,
+    get_subquestion_text,
+)
+from src.model.context.context import GraphContext
+from src.utils.utils import build_tool_registry_snapshot
 
 LOG = logging.getLogger(__name__)
 
 
 def reasoner_node(state: Dict[str, Any], agent_registry=None) -> Dict[str, Any]:
+    if agent_registry is None:
+        raise ValueError("reasoner_node: agent_registry is required")
+
     ctx = state if isinstance(state, GraphContext) else GraphContext.from_state_dict(state)
 
-    # Определяем текущий шаг (в порядке: execution.current_subquestion_id -> first step in steps)
-    step_id = ctx.execution.current_subquestion_id or (next(iter(ctx.execution.steps.keys())) if ctx.execution.steps else None)
+    step_id = get_current_step_id(ctx)
     if not step_id:
-        ctx.append_history({"type": "reasoner_no_step"})
-        return ctx.to_legacy_state()
+        LOG.warning("⚠️ reasoner_node: нет текущего шага")
+        append_history_event(ctx, {"type": "reasoner_no_step"})
+        return ctx.to_dict()
 
-    step = ctx.ensure_step(step_id)
-
-    # Инстанцируем ReasonerAgent (control agent)
-    if agent_registry is None:
-        ctx.append_history({"type": "reasoner_no_registry"})
-        return ctx.to_legacy_state()
+    # ✅ ИСПОЛЬЗУЕМ НОВЫЙ МЕТОД ensure_execution_step
+    step = ctx.ensure_execution_step(step_id)
 
     try:
-        reasoner = agent_registry.instantiate_agent("ReasonerAgent", control=True)
+        subquestion_text = get_subquestion_text(ctx, step_id)
     except Exception as e:
-        ctx.append_history({"type": "reasoner_instantiate_failed", "error": str(e)})
-        return ctx.to_legacy_state()
+        LOG.error("❌ reasoner_node: не найден текст подвопроса для шага %s: %s", step_id, e)
+        return ctx.to_dict()
 
-    # Подготовка параметров в стиле legacy (чтобы mock-тесты продолжали работать)
+    # Собираем результаты других шагов
+    step_outputs = ctx.get_all_step_results_for_reasoner()
+
+    # Собираем snapshot инструментов
+    tool_registry_snapshot = build_tool_registry_snapshot(agent_registry)
+
+    # Состояние шага для промпта
+    step_state = ctx.get_step_state_for_reasoner(step_id)
+
     params = {
-        "step": step.model_dump() if hasattr(step, "model_dump") else dict(step),
-        "execution_state": ctx.execution.model_dump() if hasattr(ctx.execution, "model_dump") else dict(ctx.execution)
+        "subquestion": {"id": step_id, "text": subquestion_text},
+        "step_state": step_state,
+        "step_outputs": step_outputs,
+        "tool_registry_snapshot": tool_registry_snapshot,
     }
 
+    LOG.info("🧠 reasoner_node: вызов ReasonerAgent для шага %s", step_id)
+    append_history_event(ctx, {"type": "reasoner_call", "step_id": step_id})
+
     try:
-        res = reasoner.execute_operation("step", params, context=None)
+        reasoner_agent = agent_registry.instantiate_agent("ReasonerAgent", control=True)
+        agent_result = reasoner_agent.execute_operation("decide_next_stage", params=params, context={})
     except Exception as e:
-        ctx.set_step_error(step_id, f"reasoner.execute threw: {e}", stage="execute")
-        return ctx.to_legacy_state()
+        LOG.exception("💥 Ошибка при вызове ReasonerAgent: %s", e)
+        return ctx.to_dict()
 
-    # Обработка результата
-    if not isinstance(res, AgentResult):
-        ctx.append_history({"type": "reasoner_invalid_result_type", "value": str(type(res))})
-        return ctx.to_legacy_state()
+    if not isinstance(agent_result, AgentResult) or agent_result.status != "ok":
+        LOG.error("❌ ReasonerAgent вернул ошибку: %s", agent_result.error or agent_result.content)
+        return ctx.to_dict()
 
-    if res.is_error():
-        ctx.set_step_error(step_id, res.content or res.error or res.message or "Reasoner error", stage="agent")
-        return ctx.to_legacy_state()
+    decision = agent_result.output
+    next_stage = decision.get("next_stage")
+    reason = decision.get("reason", "")
+    LOG.info("✅ Reasoner принял решение: next_stage=%s, reason=%s", next_stage, reason)
 
-    structured = res.structured or {}
-    # updated_step — применяем безопасно
-    updated_step_raw = structured.get("updated_step") or {}
-    if updated_step_raw:
-        for k, v in dict(updated_step_raw).items():
-            try:
-                setattr(step, k, v)
-            except Exception:
-                ctx.memory.setdefault("reasoner_updated_fields", {}).setdefault(step_id, {})[k] = v
-        ctx.ensure_step(step_id)
+    # ✅ Записываем решение через новый метод
+    ctx.record_reasoner_decision(step_id, decision)
 
-    decision = structured.get("decision")
-    if decision:
-        # Записываем current_call через API (гарантия консистентности)
-        ctx.set_current_call(decision, step_id=step_id)
-    else:
-        ctx.clear_current_call()
+    # === finalize ===
+    if next_stage == "finalize":
+        ctx.mark_step_completed(step_id)
+        LOG.info("🏁 Шаг %s завершён", step_id)
+        return ctx.to_dict()
 
-    # Если reasoner сразу возвращает final_answer
-    if isinstance(decision, dict) and decision.get("action") == "final_answer":
-        ctx.final_answer = decision.get("answer")
-
-    if "next_stage" in structured:
-        ctx.append_history({"type": "reasoner_next_stage", "next_stage": structured.get("next_stage")})
-
-    return ctx.to_legacy_state()
+    # Любые другие этапы — передаём в executor
+    return ctx.to_dict()

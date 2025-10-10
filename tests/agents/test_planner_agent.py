@@ -6,7 +6,7 @@
 import json
 import pytest
 from src.agents.PlannerAgent.core import PlannerAgent
-from src.services.results.agent_result import AgentResult
+from src.model.agent_result import AgentResult
 
 @pytest.fixture
 def planner_descriptor():
