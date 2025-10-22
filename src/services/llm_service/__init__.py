@@ -1,22 +1,9 @@
-# services/llm_service/__init__.py
+# src/services/llm_service/__init__.py
 """
-Основной интерфейс пакета llm_service.
-Экспортирует функции для создания, получения и управления экземплярами LLM.
-Также экспортирует вспомогательные утилиты для работы с промптами.
+Единая точка входа для LLM-сервиса.
+Предоставляет функцию ensure_llm(profile), которая возвращает
+инстанцированный и закэшированный адаптер LLM по имени профиля.
 """
+from .factory import ensure_llm
 
-from .factory import create_llm, ensure_llm, get_llm, close_llm
-from .config import list_profiles, get_agent_config, get_all_agents_config
-from .utils import safe_format, strip_code_fences
-
-__all__ = [
-    "create_llm",
-    "ensure_llm",
-    "get_llm",
-    "close_llm",
-    "list_profiles",
-    "get_agent_config",
-    "get_all_agents_config",
-    "safe_format",
-    "strip_code_fences",
-]
+__all__ = ["ensure_llm"]

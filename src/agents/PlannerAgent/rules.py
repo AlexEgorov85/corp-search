@@ -1,30 +1,25 @@
-# src/agents/PlannerAgent/validation/decomposition_rules.py
+# src/agents/PlannerAgent/rules.py
 
 from typing import Any, Dict, List
 import logging
 
 LOG = logging.getLogger(__name__)
 
-def _is_atomic_question(text: str) -> bool:
-    """Простая эвристика: атомарный вопрос содержит один глагол/цель."""
-    # В реальности можно использовать NLP, но для MVP — простая проверка
-    return "?" not in text[:-1]  # нет вложенных вопросов
-
 def _has_cycles(subquestions: List[Dict]) -> bool:
-    """Проверка на циклические зависимости (DFS)."""
     if not isinstance(subquestions, list):
-        return False  # Если не список — не может быть циклов
+        return False
     graph = {}
     for sq in subquestions:
         if not isinstance(sq, dict) or "id" not in sq:
             continue
-        # Проверяем, что depends_on — список
         deps = sq.get("depends_on", [])
         if not isinstance(deps, list):
             return False
         graph[sq["id"]] = deps
+
     visited = set()
     rec_stack = set()
+
     def dfs(node):
         if node in rec_stack:
             return True
@@ -37,31 +32,38 @@ def _has_cycles(subquestions: List[Dict]) -> bool:
                 return True
         rec_stack.remove(node)
         return False
-    # Проверяем, что graph не пустой
+
     if not graph:
         return False
     return any(dfs(node) for node in graph)
 
-# Правила валидации ДЕКОМПОЗИЦИИ
+# Обновлённые правила валидации
 DECOMPOSITION_RULES = [
     {
-        "id": "subq_structure",
+        "id": "has_reasoning",
         "target": "decomposition",
-        "condition": lambda d, tools: isinstance(d, dict) and "subquestions" in d and isinstance(d["subquestions"], list),
-        "message": "Декомпозиция должна быть объектом с полем 'subquestions' (массив)",
+        "condition": lambda d, tools: isinstance(d, dict) and "reasoning" in d and len(d["reasoning"]) == 5,
+        "message": "Декомпозиция должна содержать массив reasoning из 5 элементов (P1–P5)",
         "severity": "error"
     },
     {
-        "id": "subq_atomic",
+        "id": "has_planning",
+        "target": "decomposition",
+        "condition": lambda d, tools: isinstance(d.get("planning"), dict),
+        "message": "Поле planning должно быть объектом",
+        "severity": "error"
+    },
+    {
+        "id": "subq_structure",
         "target": "subquestion",
-        "condition": lambda sq, tools: _is_atomic_question(sq["text"]),
-        "message": "Подвопрос должен быть атомарным (один вопрос)",
+        "condition": lambda sq, tools: all(k in sq for k in ["id", "text", "depends_on", "confidence", "reason", "explanation"]),
+        "message": "Подвопрос должен содержать id, text, depends_on, confidence, reason, explanation",
         "severity": "error"
     },
     {
         "id": "no_cycles",
         "target": "decomposition",
-        "condition": lambda d, tools: not _has_cycles(d["subquestions"]),
+        "condition": lambda d, tools: not _has_cycles(d.get("subquestions", [])),
         "message": "Обнаружены циклические зависимости между подвопросами",
         "severity": "error"
     }
@@ -84,13 +86,11 @@ def validate_decomposition(decomposition: Any, tool_registry: dict) -> tuple[boo
                 for sq in subqs:
                     if not isinstance(sq, dict):
                         continue
-                    if "id" not in sq or "text" not in sq:
-                        continue
                     is_ok = rule["condition"](sq, tool_registry)
                     if not is_ok:
                         issues.append({
                             "rule_id": rule["id"],
-                            "message": f"{rule['message']} (подвопрос: {sq['text']})",
+                            "message": f"{rule['message']} (подвопрос: {sq.get('text', 'N/A')})",
                             "severity": rule["severity"]
                         })
         except Exception as e:
@@ -101,4 +101,3 @@ def validate_decomposition(decomposition: Any, tool_registry: dict) -> tuple[boo
             })
     is_valid = len([i for i in issues if i["severity"] == "error"]) == 0
     return is_valid, issues
-

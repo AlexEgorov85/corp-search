@@ -10,6 +10,7 @@
 
 from typing import Any, Dict
 import os
+from pathlib import Path
 
 # Окружение и режим работы
 APP_ENV = os.environ.get("APP_ENV", "development")
@@ -38,6 +39,27 @@ LLM_PROFILES: Dict[str, Dict[str, Any]] = {
             "verbose": False, 
         },
     },
+     "thinking": {
+        "backend": os.environ.get("LLM_BACKEND", "qwen_thinking"),  # пример: 'llama_cpp', 'ollama', 'openai'
+        "model_path": os.environ.get("LLM_MODEL_PATH", r"C:\Qwen3\Qwen3-4B-Thinking-2507-F16.gguf"),
+        "n_ctx": int(os.environ.get("LLM_N_CTX", "16384")),
+        "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.3")),
+        "top_p": float(os.environ.get("LLM_TOP_P", "0.9")),
+        "max_tokens": int(os.environ.get("LLM_MAX_TOKENS", "8192")),
+        "backend_kwargs": {
+            "n_threads": int(os.environ.get("LLM_THREADS", "8")),
+            "use_gpu": os.environ.get("LLM_USE_GPU", "false").lower() in ("1", "true", "yes"),
+            "verbose": False, 
+        },
+    },
+    "Instruct": {
+        "backend": os.environ.get("LLM_BACKEND", "transformers"),  # пример: 'llama_cpp', 'ollama', 'openai'
+        "model_path": os.environ.get("LLM_MODEL_PATH", Path("C:\Qwen3\Qwen3-4B")),
+        "n_ctx": int(os.environ.get("LLM_N_CTX", "16384")),
+        "temperature": float(os.environ.get("LLM_TEMPERATURE", "0.3")),
+        "top_p": float(os.environ.get("LLM_TOP_P", "0.9")),
+        "max_tokens": int(os.environ.get("LLM_MAX_TOKENS", "8192")),
+    },
     "explore": {
         "backend": "llama_cpp",
         "model_path": os.environ.get("LLM_MODEL_PATH_EXPLORE", r"C:\phi-3\Phi-3-mini-4k-instruct-fp16.gguf"),
@@ -46,13 +68,16 @@ LLM_PROFILES: Dict[str, Dict[str, Any]] = {
         "max_tokens": 1024,
         "backend_kwargs": {"n_threads": 8},
     },
-    "local_quick": {
-        "backend": "llama_cpp",
-        "model_path": os.environ.get("LLM_MODEL_PATH_QUICK", r"C:\models\alpaca\alpaca-7b.gguf"),
-        "n_ctx": 2048,
-        "temperature": 0.0,
-        "max_tokens": 256,
-        "backend_kwargs": {"n_threads": 4},
+    "gigachat": {
+        "backend": "gigachat",
+        "model": "GigaChat-2", # или "GigaChat"
+        "credentials": "ваш_client_id:ваш_secret",
+        "credentials": os.environ.get("GIGACHAT_CREDENTIALS", "0199e359-5ce8-7228-bac3-4c66c7c5f72a:MDE5OWUzNTktNWNlOC03MjI4LWJhYzMtNGM2NmM3YzVmNzJhOmIxYjVlYjJhLTdjMWUtNDU4ZS1hODk5LTZlNGI5NDhjZjI5Nw=="),  # user:password
+        "oauth_scope": "GIGACHAT_API_PERS",
+        "temperature": float(os.environ.get("GIGACHAT_TEMPERATURE", "0.3")),
+        "top_p": float(os.environ.get("GIGACHAT_TOP_P", "0.9")),
+        "max_tokens": int(os.environ.get("GIGACHAT_MAX_TOKENS", "2048")),
+        "verify_ssl": False,
     },
 }
 

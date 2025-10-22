@@ -48,7 +48,7 @@ AgentEntry (примерный JSON/Python dict)
 from typing import Dict, Any
 import os
 
-LLM_DEFAULT_PROFILE = os.environ.get("LLM_DEFAULT_PROFILE", "default")
+from src.common.settings import LLM_DEFAULT_PROFILE
 
 CONTROL_REGISTRY: Dict[str, Any] = {
     "PlannerAgent": {
@@ -76,5 +76,5 @@ CONTROL_REGISTRY: Dict[str, Any] = {
         "implementation": "src.agents.SynthesizerAgent.core:SynthesizerAgent",
         "config": {"llm_profile": LLM_DEFAULT_PROFILE},
         "meta": {"role": "control", "maintainers": ["platform-team"]}
-    }
+    },
 }

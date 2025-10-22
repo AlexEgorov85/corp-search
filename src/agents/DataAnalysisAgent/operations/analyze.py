@@ -1,7 +1,6 @@
 # src/agents/DataAnalysisAgent/operations/analyze.py
 """
 Операция `analyze` — универсальный анализ данных.
-
 Цель: проанализировать входные данные (`raw_output`) в контексте подвопроса (`subquestion_text`)
 и вернуть структурированный результат + human-readable summary.
 
@@ -31,6 +30,7 @@
 from __future__ import annotations
 import json
 import logging
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 from src.agents.operations_base import BaseOperation, OperationKind
 from src.model.agent_result import AgentResult
@@ -38,23 +38,33 @@ from src.model.agent_result import AgentResult
 LOG = logging.getLogger(__name__)
 
 
+def _default_serializer(obj):
+    """
+    Безопасный сериализатор для JSON, поддерживающий:
+      - datetime.date → ISO-строка ("2023-01-01")
+      - datetime.datetime → ISO-строка ("2023-01-01T12:00:00")
+    Используется в json.dumps(..., default=_default_serializer).
+    """
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    # Если объект не поддерживается — вызовется TypeError, что корректно
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+
 class Operation(BaseOperation):
     """
     Универсальная операция анализа данных.
     """
 
-    # Тип операции — прямой вызов
-    kind = OperationKind.DIRECT
-
+    # Тип операции
+    kind = OperationKind.SEMANTIC
     # Описание операции
     description = "Автоматически анализирует входные данные и возвращает структурированный результат."
-
     # Схема входных параметров (обязательна для документации и валидации)
     params_schema = {
         "subquestion_text": {"type": "string", "required": True},
         "raw_output": {"type": "any", "required": True},
     }
-
     # Схема выходных данных
     outputs_schema = {
         "type": "object",
@@ -67,7 +77,6 @@ class Operation(BaseOperation):
     def _detect_data_type(self, data: Any) -> str:
         """
         Определяет тип входных данных.
-
         Возвращает:
             "empty"       — данные отсутствуют или пусты
             "table"       — список словарей (табличные данные)
@@ -95,10 +104,9 @@ class Operation(BaseOperation):
             return "scalar"
         return "unknown"
 
-    def _analyze_table(self, data: List[Dict]) -> Dict[str, Any]:
+    def _analyze_table(self,  data: List[Dict]) -> Dict[str, Any]:
         """
         Анализ табличных данных.
-
         Возвращает:
             {
                 "row_count": int,
@@ -119,7 +127,6 @@ class Operation(BaseOperation):
     def _analyze_text_list(self, data: List[str]) -> Dict[str, Any]:
         """
         Анализ списка текстов.
-
         Возвращает:
             {
                 "text_count": int,
@@ -131,13 +138,14 @@ class Operation(BaseOperation):
             "sample": data[:2]
         }
 
-    def _synthesize_summary(self, subquestion: str, metrics: Dict[str, Any]) -> str:
+    def _synthesize_summary(self, subquestion: str, metrics: Dict[str, Any], agent) -> str:
         """
         Генерирует human-readable summary через LLM.
 
         Аргументы:
             subquestion (str): подвопрос
             metrics (dict): структурированные метрики
+            agent: экземпляр DataAnalysisAgent (для доступа к LLM)
 
         Возвращает:
             str: краткое резюме на русском языке
@@ -147,16 +155,15 @@ class Operation(BaseOperation):
              Метрики: {'row_count': 5, 'columns': ['title', 'year']}
              Кратко опиши результат."
         """
-        if not self.agent.llm:
+        if not agent.llm:
             return f"Проанализированы данные для подвопроса: {subquestion}"
-
         prompt = (
             f"Подвопрос: {subquestion}\n"
-            f"Метрики: {json.dumps(metrics, ensure_ascii=False)}\n"
+            f"Метрики: {json.dumps(metrics, ensure_ascii=False, default=_default_serializer)}\n"
             "Кратко опиши результат на русском языке (1-2 предложения)."
         )
         try:
-            raw = self.agent.llm.generate(prompt)
+            raw = agent.llm.generate(prompt)
             return raw.strip()
         except Exception as e:
             LOG.warning("Ошибка генерации summary через LLM: %s", e)
@@ -178,7 +185,6 @@ class Operation(BaseOperation):
         """
         subquestion = params["subquestion_text"]
         raw_output = params["raw_output"]
-
         try:
             # Шаг 1: Определение типа данных
             data_type = self._detect_data_type(raw_output)
@@ -196,20 +202,18 @@ class Operation(BaseOperation):
                 metrics = {"raw": str(raw_output)[:500]}
 
             # Шаг 3: Генерация human-readable summary
-            summary = self._synthesize_summary(subquestion, metrics)
+            summary = self._synthesize_summary(subquestion, metrics, agent)
 
             # Шаг 4: Формирование результата
             output = {
                 "metrics": metrics,
                 "summary": summary
             }
-
             return AgentResult.ok(
                 stage="data_analysis",
                 output=output,
                 summary=f"Успешный анализ данных для подвопроса: {subquestion}"
             )
-
         except Exception as e:
             LOG.exception("Ошибка в DataAnalysisAgent.analyze")
             return AgentResult.error(

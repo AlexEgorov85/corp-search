@@ -34,10 +34,6 @@ import os
 
 from src.common import settings
 
-# runtime values (подхватываем из окружения, если заданы)
-POSTGRES_DSN = os.environ.get("POSTGRES_DSN")
-LLM_DEFAULT_PROFILE = os.environ.get("LLM_DEFAULT_PROFILE", "default")
-
 TOOL_REGISTRY: Dict[str, Any] = {
     "BooksLibraryAgent": {
         "name": "BooksLibraryAgent",
@@ -50,7 +46,7 @@ TOOL_REGISTRY: Dict[str, Any] = {
         "implementation": "src.agents.BooksLibraryAgent.core:BooksLibraryAgent",
         "config": {
             "db_uri": settings.POSTGRES_DSN,
-            "llm_profile": LLM_DEFAULT_PROFILE,
+            "llm_profile": settings.LLM_DEFAULT_PROFILE,
             "allowed_tables": ["authors", "books", "chapters", "genres", "book_genres"],
             "max_rows": 1000
         },
@@ -60,13 +56,22 @@ TOOL_REGISTRY: Dict[str, Any] = {
         }
     },
 
+    "StepResultRelayAgent": {
+        "name": "StepResultRelayAgent",
+        "title": "Ретранслятор результата шага",
+        "description": "Специальный агент для передачи результата одного шага в другой без повторного вызова.",
+        "implementation": "src.agents.StepResultRelayAgent.core:StepResultRelayAgent",
+        "config": {},
+        "meta": {"role": "internal"}
+    },
+
     "ResultValidatorAgent": {
         "name": "ResultValidatorAgent",
         "title": "Валидатор результата (ResultValidatorAgent)",
         "description": "Универсальный агент для проверки, что результат шага отвечает на подвопрос.",
         "implementation": "src.agents.ResultValidatorAgent.core:ResultValidatorAgent",
         "config": {
-            "llm_profile": LLM_DEFAULT_PROFILE
+            "llm_profile": settings.LLM_DEFAULT_PROFILE
             },
         "meta": {
             "role": "control", 
@@ -83,7 +88,7 @@ TOOL_REGISTRY: Dict[str, Any] = {
         ),
         "implementation": "src.agents.DataAnalysisAgent.core:DataAnalysisAgent",
         "config": {
-            "llm_profile": LLM_DEFAULT_PROFILE,
+            "llm_profile": settings.LLM_DEFAULT_PROFILE,
             "max_map_batch": int(os.environ.get("DATAAGENT_MAX_MAP_BATCH", "500"))
         },
         "meta": {

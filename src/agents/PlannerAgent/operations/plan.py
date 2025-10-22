@@ -1,112 +1,77 @@
 # src/agents/PlannerAgent/operations/plan.py
 """
 Операция 'plan' для PlannerAgent.
-
-Эта операция отвечает за генерацию декомпозиции (плана) исходного вопроса на список
-атомарных подвопросов. Она использует LLM и встроенный механизм повторных попыток
-с валидацией для обеспечения корректности результата.
-
-Согласно новой архитектуре, операция:
-1. Принимает параметры через `params`.
-2. Возвращает результат строго в виде `AgentResult`.
-3. Использует `AgentResult.ok()` для успешного завершения, заполняя семантические поля:
-   - `stage`: "planning" — этап генерации плана.
-   - `output`: структурированный план (dict).
-   - `summary`: краткое человекочитаемое резюме действия.
-   - `input_params`: исходные параметры для аудита.
-4. Не заполняет поля `agent` и `operation` — это делает BaseAgent автоматически.
+Цель: сгенерировать структурированный план с полной прозрачностью принятия решений.
+Структура итогового JSON:
+{
+  "reasoning": ["P1: ...", ..., "P5: ..."],
+  "planning": { "needed": true|false, "confidence": 0.0–1.0, "reason": "...", "explanation": "..." },
+  "subquestions": [
+    { "id": "q1", "text": "...", "depends_on": [], "confidence": 0.0–1.0, "reason": "...", "explanation": "..." }
+  ],
+  "final_decision": { "explanation": "Итоговое резюме в 1–2 предложения" }
+}
 """
-
+from __future__ import annotations
+import json
+import logging
+from typing import Any, Dict
 from src.agents.operations_base import BaseOperation, OperationKind
 from src.model.agent_result import AgentResult
 from src.agents.PlannerAgent.decomposition import DecompositionPhase
+LOG = logging.getLogger(__name__)
 
 
 class Operation(BaseOperation):
-    """
-    Операция генерации плана.
-    """
-    # Указываем тип операции как DIRECT (прямой вызов)
+    """Операция 'plan' для PlannerAgent."""
     kind = OperationKind.DIRECT
-    # Обязательное описание операции
     description = "Сгенерировать декомпозицию вопроса на подвопросы."
-    # Схема входных параметров (для документации и валидации на уровне реестра)
     params_schema = {
         "question": {"type": "string", "required": True},
         "tool_registry_snapshot": {"type": "object", "required": True}
     }
-    # Схема выходных данных
     outputs_schema = {
         "type": "object",
-        "properties": {"subquestions": "array"}
+        "properties": {
+            "plan": {"type": "object"}
+        }
     }
 
-    def run(self, params: dict, context: dict, agent) -> AgentResult:
-        """
-        Основной метод выполнения операции.
-
-        Args:
-            params (dict): Параметры операции.
-                - question: Исходный вопрос пользователя (str).
-                - tool_registry_snapshot: Снимок реестра инструментов (dict).
-            context (dict): Контекст выполнения (не используется в этой операции).
-            agent: Экземпляр родительского агента (PlannerAgent), предоставляет доступ к LLM.
-
-        Returns:
-            AgentResult: Результат выполнения операции.
-        """
-        # --- Валидация входных параметров ---
+    def run(self, params: Dict[str, Any], context: Dict[str, Any], agent) -> AgentResult:
+        """Основной метод выполнения операции."""
         question = params.get("question")
+        tool_registry = params.get("tool_registry_snapshot", {})
         if not question or not isinstance(question, str):
             return AgentResult.error(
-                message="Параметр 'question' обязателен и должен быть строкой.",
-                # Заполняем семантические поля для ошибки
-                stage="planning",
+                message="Не указан или неверный параметр 'question'",
+                stage="plan_generation",
                 input_params=params
             )
-
-        tool_registry = params.get("tool_registry_snapshot")
         if not tool_registry:
-            return AgentResult.error(
-                message="Параметр 'tool_registry_snapshot' обязателен для генерации плана.",
-                stage="planning",
-                input_params=params
-            )
+            LOG.warning("Пустой tool_registry_snapshot")
 
-        # --- Подготовка LLM-обертки ---
-        # Создаем обертку, совместимую с DecompositionPhase, которая ожидает функцию с messages
-        def llm_wrapper(messages: list[dict[str, str]]) -> str:
-            if agent.llm is None:
-                raise RuntimeError("LLM не была инициализирована для агента PlannerAgent.")
-            # Форматируем список сообщений в простой промпт для текущего LLM-адаптера
-            prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
-            return agent.llm.generate(prompt)
-
-        # --- Запуск процесса декомпозиции ---
-        decomposition_phase = DecompositionPhase(llm_callable=llm_wrapper, max_retries=3)
-        success, decomposition, issues = decomposition_phase.run(question, tool_registry)
+        decomposition_phase = DecompositionPhase(llm=agent.llm, max_retries=3)
+        success, decomposition, feedback, diagnostics = decomposition_phase.run(params)
+        LOG.debug("Декомпозиция завершена. Успех: %s", success)
 
         if success:
-            # Успешный результат: формируем AgentResult с полным семантическим контекстом
             return AgentResult.ok(
-                # Этап выполнения
-                stage="planning",
-                # Основной структурированный результат
+                stage="plan_generation",
                 output={"plan": decomposition},
-                # Краткое резюме для логов и отладки
-                summary=f"Успешно сгенерирован план из {len(decomposition.get('subquestions', []))} подвопросов.",
-                # Сохраняем входные параметры для аудита
-                input_params=params
+                summary=f"Успешно сгенерирован план из {len(decomposition.get('subquestions', []))} подвопросов",
+                input_params=params,
+                thinking=diagnostics.get("thinking"),
+                prompt=diagnostics.get("prompt"),
+                raw_response=diagnostics.get("raw_response"),
+                tokens_used=diagnostics.get("tokens_used")
             )
         else:
-            # Ошибка: агрегируем все проблемы в читаемое сообщение
-            error_msg = "Не удалось сгенерировать валидную декомпозицию. Проблемы: " + "; ".join(
-                [issue.get("message", "Неизвестная ошибка") for issue in issues]
-            )
             return AgentResult.error(
-                message=error_msg,
-                stage="planning",
+                stage="plan_generation",
+                message=f"Не удалось сгенерировать декомпозицию: {feedback}",
                 input_params=params,
-                # Дополнительные метаданные с деталями ошибок
-                meta={"validation_issues": issues}
+                prompt=diagnostics.get("prompt"),
+                raw_response=diagnostics.get("raw_response"),
+                thinking=diagnostics.get("thinking"),
+                tokens_used=diagnostics.get("tokens_used")
             )

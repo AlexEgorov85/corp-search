@@ -21,7 +21,7 @@ graph = build_react_graph(agent_registry)
 ctx = GraphContext()
 
 # === 2. Устанавливаем вопрос через API ===
-question = "Найди книги Пушкина и укажи главного героя в последней из них?"
+question = "Найди книги Пушкина и укажи последнюю из них?"
 # question = "Найди книги Пушкина"
 set_question(ctx, question)
 

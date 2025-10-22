@@ -31,6 +31,7 @@ src/agents/MyAgent/
 agent = agent_registry.instantiate_agent("MyAgent", control=True)
 result = agent.execute_operation("op1", {"param": "value"})  # LLM и операции инициализируются автоматически
 """
+
 from __future__ import annotations
 import importlib.util
 import inspect
@@ -38,11 +39,11 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from src.agents.operations_base import BaseOperation
 from src.model.agent_result import AgentResult
-from src.services.llm_service.factory import ensure_llm
+from src.services.llm_service import ensure_llm  # ← обновлённый импорт
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
@@ -51,6 +52,7 @@ LOG.addHandler(logging.NullHandler())
 class BaseAgent:
     """
     Базовый класс для всех агентов.
+
     Атрибуты:
         descriptor (Dict[str, Any]): Метаданные агента из реестра (name, title, implementation и т.д.).
         config (Dict[str, Any]): Конфигурация агента (из поля "config" в реестре).
@@ -58,15 +60,18 @@ class BaseAgent:
         _operations (Dict[str, type[BaseOperation]]): Кэш загруженных классов операций из папки operations/.
         _initialized (bool): Флаг, показывающий, была ли выполнена инициализация.
     """
+
     # Обязательные поля в descriptor
     _REQUIRED_DESCRIPTOR_KEYS = {"name", "title", "description", "implementation"}
 
     def __init__(self, descriptor: Dict[str, Any], config: Optional[Dict[str, Any]] = None):
         """
         Инициализирует базовый агент.
+
         Args:
             descriptor (Dict[str, Any]): Метаданные агента из реестра.
             config (Optional[Dict[str, Any]]): Конфигурация агента.
+
         Raises:
             ValueError: Если в descriptor отсутствуют обязательные поля.
         """
@@ -75,6 +80,7 @@ class BaseAgent:
         missing = self._REQUIRED_DESCRIPTOR_KEYS - set(descriptor.keys())
         if missing:
             raise ValueError(f"descriptor missing required keys: {sorted(missing)}")
+
         self.descriptor: Dict[str, Any] = descriptor
         self.config: Dict[str, Any] = dict(config or {})
         self.llm: Optional[Any] = None
@@ -86,6 +92,7 @@ class BaseAgent:
     # -------------------------
     # Свойства дескриптора
     # -------------------------
+
     @property
     def name(self) -> str:
         """Возвращает имя агента из descriptor['name']."""  
@@ -104,6 +111,7 @@ class BaseAgent:
     # -------------------------
     # Ленивая инициализация (выполняется автоматически)
     # -------------------------
+
     def _lazy_initialize(self) -> None:
         """Выполняет инициализацию при первом вызове execute_operation."""
         if self._initialized:
@@ -151,7 +159,6 @@ class BaseAgent:
                 if op_file.name.startswith("_"):
                     continue
                 op_name = op_file.stem
-
                 try:
                     spec_op = importlib.util.spec_from_file_location(
                         f"{agent_module}.operations.{op_name}", op_file
@@ -166,26 +173,22 @@ class BaseAgent:
                     if not hasattr(mod, "Operation"):
                         LOG.error("Файл %s не содержит класса 'Operation'", op_file)
                         continue
-
                     op_cls = getattr(mod, "Operation")
                     if not (inspect.isclass(op_cls) and issubclass(op_cls, BaseOperation)):
                         LOG.error("Operation в %s не наследуется от BaseOperation", op_file)
                         continue
-
                     ops[op_name] = op_cls
                     LOG.debug("Загружена операция %s для агента %s", op_name, self.name)
-
                 except Exception as e:
                     LOG.exception("Ошибка загрузки операции %s из %s: %s", op_name, op_file, e)
-
             self._operations = ops
-
         except Exception as e:
             LOG.exception("Ошибка при загрузке операций для агента %s: %s", self.name, e)
 
     # -------------------------
     # Методы для AgentRegistry (анализ без инициализации)
     # -------------------------
+
     @staticmethod
     def _load_operations_from_module_path(module_path: str) -> Dict[str, Any]:
         """
@@ -196,10 +199,8 @@ class BaseAgent:
             spec = importlib.util.find_spec(module_path)
             if spec is None or spec.origin is None:
                 return {}
-
             agent_file = Path(spec.origin).resolve()
             operations_dir = agent_file.parent / "operations"
-
             if not operations_dir.exists():
                 return {}
 
@@ -208,7 +209,6 @@ class BaseAgent:
                 if op_file.name.startswith("_"):
                     continue
                 op_name = op_file.stem
-
                 try:
                     spec_op = importlib.util.spec_from_file_location(
                         f"{module_path}.operations.{op_name}", op_file
@@ -217,25 +217,19 @@ class BaseAgent:
                         continue
                     mod = importlib.util.module_from_spec(spec_op)
                     spec_op.loader.exec_module(mod)
-
                     if not hasattr(mod, "Operation"):
                         continue
-
                     op_cls = getattr(mod, "Operation")
                     if not (inspect.isclass(op_cls) and issubclass(op_cls, BaseOperation)):
                         continue
-
                     ops[op_name] = op_cls.get_manifest()
-
                 except Exception as e:
                     LOG.debug("Не удалось получить манифест для %s: %s", op_name, e)
                     ops[op_name] = {
                         "kind": "direct",
                         "description": f"Операция {op_name} (манифест недоступен)"
                     }
-
             return ops
-
         except Exception as e:
             LOG.debug("Не удалось загрузить операции для модуля %s: %s", module_path, e)
             return {}
@@ -255,6 +249,7 @@ class BaseAgent:
     # -------------------------
     # Выполнение операций
     # -------------------------
+
     def execute_operation(
         self,
         operation: str,
@@ -263,17 +258,21 @@ class BaseAgent:
     ) -> AgentResult:
         """
         Выполняет операцию агента.
+
         Логика:
         1. Вызывает _lazy_initialize() для гарантии инициализации.
         2. Проверяет существование операции в self._operations.
         3. Создаёт экземпляр операции и вызывает метод run().
         4. Оборачивает результат в AgentResult с метаданными.
+
         Args:
             operation (str): Имя операции (без расширения .py).
             params (Optional[Dict[str, Any]]): Параметры операции.
             context (Optional[Dict[str, Any]]): Контекст выполнения.
+
         Returns:
             AgentResult: Результат выполнения операции.
+
         Raises:
             KeyError: Если операция не найдена.
         """
@@ -286,15 +285,14 @@ class BaseAgent:
 
         params = params or {}
         context = context or {}
-        op_cls = self._operations[operation]  # Это класс, унаследованный от BaseOperation
 
+        op_cls = self._operations[operation]  # Это класс, унаследованный от BaseOperation
         start = time.time()
         try:
             # Создаём экземпляр операции
             op_instance = op_cls()
             # Вызываем метод run
             result = op_instance.run(params, context, self)
-
             if not isinstance(result, AgentResult):
                 raise TypeError(f"Операция должна вернуть AgentResult, получено: {type(result)}")
 
@@ -308,15 +306,16 @@ class BaseAgent:
             meta = getattr(result, "metadata", {}) or {}
             meta.setdefault("elapsed_s", time.time() - start)
             result.metadata = meta
-            return result
 
+            return result
         except Exception as exc:
             LOG.exception("Агент %s: ошибка при выполнении операции %s", self.name, operation)
-            return AgentResult.error(f"Операция '{operation}' завершилась с ошибкой: {exc}")
+            return AgentResult.error("operation_execution", f"Операция '{operation}' завершилась с ошибкой: {exc}")
 
     # -------------------------
     # Утилиты
     # -------------------------
+
     def describe(self) -> Dict[str, Any]:
         """Возвращает краткое описание агента."""
         return {
